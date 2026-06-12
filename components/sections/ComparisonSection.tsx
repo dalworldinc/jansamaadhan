@@ -1,4 +1,4 @@
-import { Check, X, Minus } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 
 const ROWS = [
   { feature: 'ITR-1 filing price',        us: '₹99',          agent: '₹500–₹1,500',  cleartax: '₹499+',    jio: '₹24 (basic only)' },

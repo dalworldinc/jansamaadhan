@@ -1,3 +1,5 @@
+'use client'
+
 import { CheckCircle, FileText, Edit2, ChevronRight, ChevronLeft, Clock, Shield } from 'lucide-react'
 import type { Service } from '@/lib/services'
 import type { OrderState } from './OrderFlow'

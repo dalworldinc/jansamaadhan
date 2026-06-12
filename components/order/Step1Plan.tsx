@@ -1,3 +1,5 @@
+'use client'
+
 import { Check, Clock, Shield, Star, ChevronRight } from 'lucide-react'
 import type { Service, ServicePlan } from '@/lib/services'
 import type { OrderState } from './OrderFlow'
