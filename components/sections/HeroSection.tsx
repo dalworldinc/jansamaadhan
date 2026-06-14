@@ -33,8 +33,6 @@ export default function HeroSection() {
             backgroundSize: '36px 36px',
           }}
         />
-        {/* Diagonal accent bar */}
-        <div className="absolute top-0 right-[20%] w-px h-full bg-gradient-to-b from-brand-teal/20 via-brand-amber/10 to-transparent" />
       </div>
 
       {/* Floating notification pills */}

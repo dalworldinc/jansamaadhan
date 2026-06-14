@@ -36,8 +36,6 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
               backgroundSize: '40px 40px',
             }}
           />
-          {/* Diagonal line accent */}
-          <div className="absolute top-0 right-24 w-px h-full bg-gradient-to-b from-transparent via-white/10 to-transparent" />
         </div>
 
         {/* Top: logo */}
