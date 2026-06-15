@@ -278,7 +278,7 @@ export default function CaseDetailView({ initialCase }: Props) {
             <div className="text-xs text-gray-500 flex items-center gap-1.5">
               <Phone size={12} className="text-brand-teal" /> {c.customerPhone}
             </div>
-            
+            <a
               href={`https://wa.me/${c.customerPhone.replace(/\D/g, '')}`}
               target="_blank"
               rel="noreferrer"
