@@ -1,30 +1,35 @@
 'use client'
 
-import { Suspense } from 'react'
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { Suspense, useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, CheckCircle, RefreshCw } from 'lucide-react'
 
-const OTP_LENGTH = 6
+const OTP_LENGTH     = 6
 const RESEND_SECONDS = 30
 
-// Inner component uses useSearchParams — must be wrapped in Suspense
 function VerifyOTPInner() {
   const router = useRouter()
   const params = useSearchParams()
-  const phone = params.get('phone') ?? ''
-  const flow = params.get('flow') ?? 'register'
-  const role = params.get('role') === 'ca' ? 'ca' : 'customer'
 
-  const [otp, setOtp] = useState<string[]>(Array(OTP_LENGTH).fill(''))
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [verified, setVerified] = useState(false)
+  const phone      = params.get('phone') ?? ''
+  const flow       = params.get('flow')  ?? 'register'
+  const role       = params.get('role') === 'ca' ? 'ca' : 'customer'
+  const icaiNumber = params.get('icai') ?? ''
+  const name       = params.get('name') ?? ''
+
+  const [otp,       setOtp]       = useState<string[]>(Array(OTP_LENGTH).fill(''))
+  const [error,     setError]     = useState('')
+  const [loading,   setLoading]   = useState(false)
+  const [verified,  setVerified]  = useState(false)
   const [resendSec, setResendSec] = useState(RESEND_SECONDS)
   const [resending, setResending] = useState(false)
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
+
+  useEffect(() => {
+    inputRefs.current[0]?.focus()
+  }, [])
 
   useEffect(() => {
     if (resendSec <= 0) return
@@ -32,54 +37,19 @@ function VerifyOTPInner() {
     return () => clearTimeout(t)
   }, [resendSec])
 
-  useEffect(() => {
-    if (otp.every(d => d !== '')) handleVerify()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [otp])
-
-  function handleChange(index: number, value: string) {
-    const digit = value.replace(/\D/g, '').slice(-1)
-    const next = [...otp]
-    next[index] = digit
-    setOtp(next)
-    setError('')
-    if (digit && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus()
-  }
-
-  function handleKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Backspace') {
-      if (otp[index]) {
-        const next = [...otp]; next[index] = ''; setOtp(next)
-      } else if (index > 0) {
-        inputRefs.current[index - 1]?.focus()
-      }
-    }
-    if (e.key === 'ArrowLeft' && index > 0) inputRefs.current[index - 1]?.focus()
-    if (e.key === 'ArrowRight' && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus()
-  }
-
-  function handlePaste(e: React.ClipboardEvent) {
-    e.preventDefault()
-    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, OTP_LENGTH)
-    if (!pasted) return
-    const next = [...otp]
-    pasted.split('').forEach((d, i) => { next[i] = d })
-    setOtp(next)
-    inputRefs.current[Math.min(pasted.length, OTP_LENGTH - 1)]?.focus()
-  }
-
-  const handleVerify = useCallback(async () => {
-    const code = otp.join('')
+  const handleVerify = useCallback(async (digits: string[]) => {
+    const code = digits.join('')
     if (code.length < OTP_LENGTH) return
     setLoading(true)
     setError('')
 
     try {
       const res = await fetch('/api/auth/verify-otp', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, code, role }),
+        body: JSON.stringify({ phone, code, role, icaiNumber, name }),
       })
+
       const data = await res.json()
 
       if (!res.ok) {
@@ -92,32 +62,66 @@ function VerifyOTPInner() {
 
       setLoading(false)
       setVerified(true)
-      await new Promise(r => setTimeout(r, 1200))
 
-      if (flow === 'login') {
-        router.push(role === 'ca' ? '/ca-portal' : '/dashboard')
-      } else if (flow === 'ca-register') {
-        // CA onboarding is just name + ICAI, already collected on the sign-up form
-        router.push('/ca-portal')
-      } else {
-        router.push('/onboarding')
-      }
+      // Brief success animation, then redirect
+      await new Promise(r => setTimeout(r, 1200))
+      router.push(data.redirect ?? (role === 'ca' ? '/ca-portal' : '/onboarding'))
     } catch {
       setError('Something went wrong. Please try again.')
       setLoading(false)
       setOtp(Array(OTP_LENGTH).fill(''))
       inputRefs.current[0]?.focus()
     }
-  }, [otp, flow, role, phone, router])
+  }, [phone, role, icaiNumber, name, router])
+
+  function handleChange(index: number, value: string) {
+    const digit = value.replace(/\D/g, '').slice(-1)
+    const next  = [...otp]
+    next[index] = digit
+    setOtp(next)
+    setError('')
+    if (digit && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus()
+    if (next.every(d => d !== '')) handleVerify(next)
+  }
+
+  function handleKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Backspace') {
+      if (otp[index]) {
+        const next = [...otp]; next[index] = ''; setOtp(next)
+      } else if (index > 0) {
+        inputRefs.current[index - 1]?.focus()
+      }
+    }
+    if (e.key === 'ArrowLeft'  && index > 0)            inputRefs.current[index - 1]?.focus()
+    if (e.key === 'ArrowRight' && index < OTP_LENGTH-1) inputRefs.current[index + 1]?.focus()
+  }
+
+  function handlePaste(e: React.ClipboardEvent) {
+    e.preventDefault()
+    const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, OTP_LENGTH)
+    if (!pasted) return
+    const next = Array(OTP_LENGTH).fill('')
+    pasted.split('').forEach((d, i) => { next[i] = d })
+    setOtp(next)
+    inputRefs.current[Math.min(pasted.length, OTP_LENGTH - 1)]?.focus()
+    if (pasted.length === OTP_LENGTH) handleVerify(next)
+  }
 
   async function handleResend() {
     setResending(true)
-    await new Promise(r => setTimeout(r, 800))
-    setResending(false)
-    setResendSec(RESEND_SECONDS)
-    setOtp(Array(OTP_LENGTH).fill(''))
-    setError('')
-    inputRefs.current[0]?.focus()
+    try {
+      await fetch('/api/auth/send-otp', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone }),
+      })
+    } finally {
+      setResending(false)
+      setResendSec(RESEND_SECONDS)
+      setOtp(Array(OTP_LENGTH).fill(''))
+      setError('')
+      inputRefs.current[0]?.focus()
+    }
   }
 
   if (verified) {
@@ -128,12 +132,10 @@ function VerifyOTPInner() {
         </div>
         <h2 className="font-display text-2xl font-bold text-brand-ink mb-2">Verified! ✓</h2>
         <p className="text-gray-500 text-sm">
-          {flow === 'login'
-            ? 'Logging you in…'
-            : flow === 'ca-register'
-              ? 'Setting up your CA portal…'
-              : 'Setting up your account…'}
-        </p>        
+          {flow === 'login' ? 'Logging you in…'
+            : flow === 'ca-register' ? 'Setting up your CA portal…'
+            : 'Setting up your account…'}
+        </p>
         <div className="mt-6 flex justify-center">
           <div className="flex gap-1.5">
             {[0, 1, 2].map(i => (
@@ -175,15 +177,14 @@ function VerifyOTPInner() {
             autoComplete="one-time-code"
             maxLength={1}
             value={digit}
-            autoFocus={i === 0}
             onChange={e => handleChange(i, e.target.value)}
             onKeyDown={e => handleKeyDown(i, e)}
-            className={`w-11 h-14 sm:w-12 sm:h-16 text-center text-xl font-bold rounded-xl border-2 bg-white outline-none transition-all duration-150 font-body
+            className={`w-11 h-14 sm:w-12 sm:h-16 text-center text-xl font-bold rounded-xl border-2 bg-white outline-none transition-all duration-150
               ${error
                 ? 'border-red-300 text-red-600 bg-red-50'
                 : digit
-                  ? 'border-brand-teal text-brand-teal bg-brand-surface shadow-sm shadow-brand-teal/10'
-                  : 'border-gray-200 text-brand-ink focus:border-brand-teal focus:shadow-sm focus:shadow-brand-teal/10'
+                  ? 'border-brand-teal text-brand-teal bg-brand-surface shadow-sm'
+                  : 'border-gray-200 text-brand-ink focus:border-brand-teal'
               }`}
           />
         ))}
@@ -191,13 +192,13 @@ function VerifyOTPInner() {
 
       <div className="flex gap-1 mb-6">
         {otp.map((d, i) => (
-          <div key={i} className={`flex-1 h-0.5 rounded-full transition-all duration-200 ${d ? 'bg-brand-teal' : 'bg-gray-100'}`} />
+          <div key={i} className={`flex-1 h-0.5 rounded-full transition-all ${d ? 'bg-brand-teal' : 'bg-gray-100'}`} />
         ))}
       </div>
 
       {error && (
         <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-sm flex items-center gap-2">
-          <span className="text-base">⚠️</span> {error}
+          <span>⚠️</span> {error}
         </div>
       )}
 
@@ -216,8 +217,7 @@ function VerifyOTPInner() {
           <p className="text-gray-400 text-sm">
             Resend OTP in{' '}
             <span className="font-semibold text-brand-teal tabular-nums">
-              {String(Math.floor(resendSec / 60)).padStart(2, '0')}:
-              {String(resendSec % 60).padStart(2, '0')}
+              {String(Math.floor(resendSec / 60)).padStart(2, '0')}:{String(resendSec % 60).padStart(2, '0')}
             </span>
           </p>
         ) : (
@@ -232,13 +232,6 @@ function VerifyOTPInner() {
         )}
       </div>
 
-      <div className="mt-4 text-center">
-        <button className="text-sm text-gray-400 hover:text-green-600 transition-colors flex items-center gap-1.5 mx-auto">
-          <span>💬</span>
-          Get OTP on WhatsApp instead
-        </button>
-      </div>
-
       <p className="text-center text-xs text-gray-400 mt-8">
         Having trouble?{' '}
         <Link href="/contact" className="text-brand-teal hover:underline">Contact support</Link>
@@ -247,23 +240,16 @@ function VerifyOTPInner() {
   )
 }
 
-// Loading skeleton shown while useSearchParams resolves
 function OTPSkeleton() {
-  return (
-    <div className="animate-pulse text-center py-8">
-      <div className="w-14 h-14 rounded-2xl bg-gray-100 mx-auto mb-5" />
-      <div className="h-7 bg-gray-100 rounded-xl w-48 mx-auto mb-3" />
-      <div className="h-4 bg-gray-100 rounded w-56 mx-auto mb-8" />
-      <div className="flex gap-2.5 justify-center">
-        {Array(6).fill(0).map((_, i) => (
-          <div key={i} className="w-11 h-14 sm:w-12 sm:h-16 bg-gray-100 rounded-xl" />
-        ))}
-      </div>
+  return <div className="animate-pulse py-8 space-y-4">
+    <div className="h-14 w-14 rounded-2xl bg-gray-100 mb-5" />
+    <div className="h-7 bg-gray-100 rounded w-48 mb-3" />
+    <div className="flex gap-2.5 justify-center">
+      {Array(6).fill(0).map((_, i) => <div key={i} className="w-11 h-14 bg-gray-100 rounded-xl" />)}
     </div>
-  )
+  </div>
 }
 
-// Default export wraps inner component in Suspense (required by Next.js 14)
 export default function VerifyOTPPage() {
   return (
     <Suspense fallback={<OTPSkeleton />}>

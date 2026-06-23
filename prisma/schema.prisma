@@ -1,0 +1,221 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+enum UserRole {
+  CUSTOMER
+  CA
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  NEW
+  IN_PROGRESS
+  DOCS_REQUESTED
+  READY_TO_FILE
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum DocumentStatus {
+  PENDING
+  UPLOADED
+  REJECTED
+}
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum EventActor {
+  SYSTEM
+  CA
+  CUSTOMER
+}
+
+enum PayoutStatus {
+  UPCOMING
+  PROCESSING
+  PAID
+}
+
+model User {
+  id          String    @id @default(cuid())
+  phone       String    @unique
+  role        UserRole
+  name        String?
+  email       String?
+  city        String?
+  state       String?
+  profession  String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+
+  orders        Order[]         @relation("CustomerOrders")
+  uploadedDocs  OrderDocument[] @relation("UploadedBy")
+  caProfile     CAProfile?
+
+  @@index([role])
+}
+
+model CAProfile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  icaiNumber       String   @unique
+  icaiVerified     Boolean  @default(false)
+  available        Boolean  @default(true)
+
+  rating           Decimal  @default(0) @db.Decimal(2, 1)
+  totalReviews     Int      @default(0)
+  specializations  String[]
+
+  bankAccountLast4 String?
+  bankIfsc         String?
+  upiId            String?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  assignedOrders   Order[]  @relation("AssignedCA")
+  payouts          Payout[]
+
+  @@index([icaiVerified, available])
+}
+
+model ServiceSnapshot {
+  id         String  @id @default(cuid())
+  slug       String
+  planId     String
+  name       String
+  planName   String
+  price      Int
+  slaLabel   String
+  caRequired Boolean
+
+  orders     Order[]
+
+  @@index([slug])
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  orderNumber String      @unique
+
+  customerId  String
+  customer    User        @relation("CustomerOrders", fields: [customerId], references: [id])
+
+  caId        String?
+  ca          CAProfile?  @relation("AssignedCA", fields: [caId], references: [id])
+
+  serviceSnapshotId String
+  serviceSnapshot   ServiceSnapshot @relation(fields: [serviceSnapshotId], references: [id])
+
+  status        OrderStatus @default(PENDING_PAYMENT)
+  priority      Boolean     @default(false)
+
+  customerNotes String?
+  caNotes       String?
+  ackNumber     String?
+  dueBy         DateTime?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  documents OrderDocument[]
+  events    OrderEvent[]
+  payment   Payment?
+
+  @@index([customerId])
+  @@index([caId])
+  @@index([status])
+}
+
+model OrderDocument {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  docKey  String
+  label   String
+
+  required Boolean
+  status   DocumentStatus @default(PENDING)
+
+  r2ObjectKey  String?
+  fileName     String?
+  fileSizeKb   Int?
+  mimeType     String?
+
+  uploadedById String?
+  uploadedBy   User?   @relation("UploadedBy", fields: [uploadedById], references: [id])
+  uploadedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model OrderEvent {
+  id      String     @id @default(cuid())
+  orderId String
+  order   Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  actor   EventActor
+  message String
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model Payment {
+  id      String @id @default(cuid())
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?
+  razorpaySignature String?
+
+  amountInPaise Int
+  status        PaymentStatus @default(CREATED)
+
+  createdAt  DateTime  @default(now())
+  paidAt     DateTime?
+  refundedAt DateTime?
+
+  @@index([status])
+}
+
+model Payout {
+  id    String    @id @default(cuid())
+  caId  String
+  ca    CAProfile @relation(fields: [caId], references: [id])
+
+  periodLabel String
+  amount      Int
+  caseCount   Int
+  status      PayoutStatus @default(UPCOMING)
+
+  payableDate DateTime?
+  paidAt      DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([caId, status])
+}

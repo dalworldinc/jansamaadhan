@@ -17,87 +17,122 @@ interface Props {
 
 type PayState = 'idle' | 'loading' | 'success' | 'failed'
 
-const UPI_APPS  = ['🔵 PhonePe', '💚 GPay', '🅿️ Paytm', '🟠 BHIM']
-const PAY_TABS  = ['UPI', 'Card', 'Net Banking', 'Wallet'] as const
-type  PayTab    = typeof PAY_TABS[number]
+const UPI_APPS = ['🔵 PhonePe', '💚 GPay', '🅿️ Paytm', '🟠 BHIM']
 
-// Declare Razorpay type for window
 declare global {
   interface Window { Razorpay: any }
 }
 
 export default function Step4Pay({ service, order, onBack }: Props) {
-  const plan          = order.selectedPlan!
-  const [tab,         setTab]     = useState<PayTab>('UPI')
-  const [upiId,       setUpiId]   = useState('')
-  const [payState,    setPayState]= useState<PayState>('idle')
-  const [orderId,     setOrderId] = useState('')
+  const plan                          = order.selectedPlan!
+  const [payState, setPayState]       = useState<PayState>('idle')
+  const [completedOrderId, setCompletedOrderId] = useState('')
+  const [completedOrderNo, setCompletedOrderNo] = useState('')
 
-  async function createOrder(): Promise<string> {
-    // Replace with real API call:
-    // const res = await fetch('/api/orders/create', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({ serviceSlug: service.slug, planId: plan.id, amount: plan.price }),
-    // })
-    // const { razorpayOrderId } = await res.json()
-    // return razorpayOrderId
-    return `order_demo_${Date.now()}`
+  async function loadRazorpayScript(): Promise<void> {
+    if (window.Razorpay) return
+    return new Promise((resolve, reject) => {
+      const s    = document.createElement('script')
+      s.src      = 'https://checkout.razorpay.com/v1/checkout.js'
+      s.onload   = () => resolve()
+      s.onerror  = () => reject(new Error('Failed to load Razorpay SDK'))
+      document.body.appendChild(s)
+    })
   }
 
-  async function handleRazorpay() {
+  async function handlePay() {
     setPayState('loading')
+
     try {
-      const rzpOrderId = await createOrder()
+      // ── 1. Create order server-side ─────────────────────────────────
+      const createRes = await fetch('/api/orders/create', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          serviceSlug:   service.slug,
+          planId:        plan.id,
+          planName:      plan.name,
+          price:         plan.price,
+          slaLabel:      service.sla,
+          caRequired:    service.caRequired,
+          customerNotes: order.notes,
+          name:          order.name,
+          email:         order.email,
+        }),
+      })
 
-      // Load Razorpay script
-      if (!window.Razorpay) {
-        await new Promise<void>((resolve, reject) => {
-          const script = document.createElement('script')
-          script.src   = 'https://checkout.razorpay.com/v1/checkout.js'
-          script.onload  = () => resolve()
-          script.onerror = () => reject()
-          document.body.appendChild(script)
+      if (!createRes.ok) {
+        const err = await createRes.json()
+        throw new Error(err.error || 'Failed to create order.')
+      }
+
+      const { orderId, orderNumber, razorpayOrderId, amount, keyId } = await createRes.json()
+
+      // ── 2. Load Razorpay checkout ────────────────────────────────────
+      await loadRazorpayScript()
+      setPayState('idle') // show the modal while processing
+
+      await new Promise<void>((resolve, reject) => {
+        const rzp = new window.Razorpay({
+          key:         keyId,
+          amount,
+          currency:    'INR',
+          name:        'JanSamaadhan',
+          description: `${service.name} — ${plan.name}`,
+          order_id:    razorpayOrderId,
+          prefill: {
+            name:  order.name,
+            email: order.email || '',
+          },
+          theme: { color: '#1A5F7A' },
+          modal: { ondismiss: () => reject(new Error('dismissed')) },
+
+          handler: async (response: {
+            razorpay_payment_id: string
+            razorpay_order_id:   string
+            razorpay_signature:  string
+          }) => {
+            // ── 3. Verify payment server-side ──────────────────────────
+            const verifyRes = await fetch('/api/orders/verify', {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id:   response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature:  response.razorpay_signature,
+              }),
+            })
+
+            if (!verifyRes.ok) {
+              const err = await verifyRes.json()
+              reject(new Error(err.error || 'Payment verification failed.'))
+              return
+            }
+
+            setCompletedOrderId(orderId)
+            setCompletedOrderNo(orderNumber)
+            resolve()
+          },
         })
-      }
 
-      const options = {
-        key:         process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ?? 'rzp_test_xxxx',
-        amount:      plan.price * 100, // paise
-        currency:    'INR',
-        name:        'JanSamaadhan',
-        description: `${service.name} — ${plan.name}`,
-        order_id:    rzpOrderId,
-        prefill: {
-          name:  order.name,
-          email: order.email || '',
-        },
-        theme:       { color: '#1A5F7A' },
-        modal: {
-          ondismiss: () => setPayState('idle'),
-        },
-        handler: async (response: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }) => {
-          // Verify payment server-side
-          // await fetch('/api/orders/verify', {
-          //   method: 'POST',
-          //   headers: { 'Content-Type': 'application/json' },
-          //   body: JSON.stringify(response),
-          // })
-          setOrderId(response.razorpay_order_id || `JS-${Date.now()}`)
-          setPayState('success')
-        },
-      }
+        rzp.on('payment.failed', () => reject(new Error('payment_failed')))
+        rzp.open()
+      })
 
-      const rzp = new window.Razorpay(options)
-      rzp.on('payment.failed', () => setPayState('failed'))
-      rzp.open()
-      setPayState('idle') // reset while modal is open
-    } catch {
-      setPayState('failed')
+      setPayState('success')
+
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : ''
+      if (msg === 'dismissed') {
+        setPayState('idle') // user closed modal — not an error
+      } else {
+        console.error('[Step4Pay]', err)
+        setPayState('failed')
+      }
     }
   }
 
-  // ── Success screen ──────────────────────────────────────────────
+  // ── Success screen ──────────────────────────────────────────────────
   if (payState === 'success') {
     return (
       <div className="max-w-lg mx-auto text-center py-10">
@@ -106,15 +141,14 @@ export default function Step4Pay({ service, order, onBack }: Props) {
         </div>
         <h2 className="font-display font-bold text-2xl text-gray-900 mb-2">Payment Successful!</h2>
         <p className="text-gray-500 text-sm mb-1">Your order has been placed.</p>
-        <p className="text-gray-400 text-xs mb-6">Order ID: <span className="font-mono text-brand-teal">{orderId}</span></p>
+        <p className="text-gray-400 text-xs mb-6 font-mono">{completedOrderNo}</p>
 
-        {/* What happens next */}
         <div className="bg-brand-surface rounded-2xl border border-brand-teal/20 p-5 text-left mb-6 space-y-3">
           <p className="text-xs font-semibold text-brand-teal mb-3">What happens next</p>
           {[
             { emoji: '👤', text: `A verified CA will be assigned to your ${service.name} within 1 hour.` },
             { emoji: '📲', text: 'You\'ll receive an SMS confirmation and CA contact details shortly.' },
-            { emoji: `⏱️`, text: `Your service will be delivered within ${service.sla}.` },
+            { emoji: '⏱️', text: `Your service will be delivered within ${service.sla}.` },
             { emoji: '📥', text: 'All documents and acknowledgements will appear in your dashboard.' },
           ].map(({ emoji, text }) => (
             <div key={text} className="flex items-start gap-3 text-xs text-gray-600">
@@ -127,21 +161,22 @@ export default function Step4Pay({ service, order, onBack }: Props) {
         <div className="flex flex-col sm:flex-row gap-3">
           <Link
             href="/dashboard"
-            className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl bg-brand-teal text-white font-semibold text-sm hover:bg-brand-teal2 transition-all shadow-sm"
+            className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl bg-brand-teal text-white font-semibold text-sm hover:bg-brand-teal2 transition-all"
           >
             <LayoutDashboard size={15} /> Go to Dashboard
           </Link>
-          <button
+          <Link
+            href={`/dashboard/orders`}
             className="flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl border border-gray-200 text-gray-600 font-semibold text-sm hover:border-brand-teal hover:text-brand-teal transition-all"
           >
-            <Download size={15} /> Download Receipt
-          </button>
+            <Download size={15} /> Track Order
+          </Link>
         </div>
       </div>
     )
   }
 
-  // ── Payment screen ──────────────────────────────────────────────
+  // ── Payment screen ──────────────────────────────────────────────────
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -150,10 +185,10 @@ export default function Step4Pay({ service, order, onBack }: Props) {
 
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
           <h2 className="font-display font-bold text-lg text-gray-900 mb-1">Complete Payment</h2>
-          <p className="text-sm text-gray-400">Secured by Razorpay · All major UPI, cards & banking accepted.</p>
+          <p className="text-sm text-gray-400">Secured by Razorpay · UPI, cards, net banking accepted.</p>
         </div>
 
-        {/* Razorpay primary button */}
+        {/* Primary pay button */}
         <div className="bg-white rounded-2xl border border-gray-100 p-5 sm:p-6 text-center">
           <div className="mb-4">
             <div className="font-display font-bold text-4xl text-brand-teal mb-1">₹{plan.price}</div>
@@ -161,7 +196,7 @@ export default function Step4Pay({ service, order, onBack }: Props) {
           </div>
 
           <button
-            onClick={handleRazorpay}
+            onClick={handlePay}
             disabled={payState === 'loading'}
             className={`w-full flex items-center justify-center gap-2 py-4 rounded-2xl font-bold text-base transition-all
               ${payState === 'loading'
@@ -183,15 +218,16 @@ export default function Step4Pay({ service, order, onBack }: Props) {
           </div>
         </div>
 
-        {/* UPI quick links */}
+        {/* UPI quick links — all trigger the same Razorpay modal */}
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Pay instantly via</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {UPI_APPS.map(app => (
               <button
                 key={app}
-                onClick={handleRazorpay}
-                className="py-3 px-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-700 hover:border-brand-teal hover:bg-brand-surface hover:text-brand-teal transition-all text-center"
+                onClick={handlePay}
+                disabled={payState === 'loading'}
+                className="py-3 px-2 rounded-xl border border-gray-200 text-xs font-semibold text-gray-700 hover:border-brand-teal hover:bg-brand-surface hover:text-brand-teal transition-all text-center disabled:opacity-50"
               >
                 {app}
               </button>
@@ -201,11 +237,10 @@ export default function Step4Pay({ service, order, onBack }: Props) {
 
         {payState === 'failed' && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            Payment failed or was cancelled. Please try again — your order has not been placed yet.
+            Payment failed. Please try again — your order has not been placed yet.
           </div>
         )}
 
-        {/* Back */}
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-brand-teal transition-colors"
@@ -242,10 +277,9 @@ export default function Step4Pay({ service, order, onBack }: Props) {
             </div>
           </div>
 
-          {/* Guarantees */}
           <div className="space-y-2 pt-2 border-t border-gray-100">
             {[
-              'Delivered in ' + service.sla,
+              `Delivered in ${service.sla}`,
               'ICAI verified CA assigned',
               'Full refund if SLA missed',
               'Lifetime document storage',
