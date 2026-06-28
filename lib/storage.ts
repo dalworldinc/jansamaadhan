@@ -1,25 +1,13 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-} from '@aws-sdk/client-s3'
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { randomUUID } from 'crypto'
 
-function getClient(): S3Client {
-  const accountId = process.env.R2_ACCOUNT_ID
-  if (!accountId || !process.env.R2_ACCESS_KEY_ID || !process.env.R2_SECRET_ACCESS_KEY) {
-    throw new Error('R2 credentials missing — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY.')
+function getConfig() {
+  const url    = process.env.SUPABASE_URL
+  const key    = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET
+  if (!url || !key || !bucket) {
+    throw new Error('Supabase Storage not configured — set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET in env.')
   }
-  return new S3Client({
-    region: 'auto',
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId:     process.env.R2_ACCESS_KEY_ID,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    },
-  })
+  return { url, key, bucket }
 }
 
 export function buildDocumentKey(orderId: string, docKey: string, fileExt: string): string {
@@ -27,31 +15,35 @@ export function buildDocumentKey(orderId: string, docKey: string, fileExt: strin
   return `orders/${orderId}/${docKey}-${randomUUID()}.${cleanExt}`
 }
 
-export async function getUploadUrl(objectKey: string, contentType: string): Promise<string> {
-  const bucket = process.env.R2_BUCKET
-  if (!bucket) throw new Error('R2_BUCKET not set.')
-  const client = getClient()
-  return getSignedUrl(
-    client,
-    new PutObjectCommand({ Bucket: bucket, Key: objectKey, ContentType: contentType }),
-    { expiresIn: 600 },
-  )
+export async function getUploadUrl(objectKey: string, _contentType: string): Promise<string> {
+  const { url, key, bucket } = getConfig()
+  const res = await fetch(`${url}/storage/v1/object/sign/${bucket}/${objectKey}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresIn: 600 }),
+  })
+  if (!res.ok) throw new Error(`Supabase Storage sign error: ${await res.text()}`)
+  const data = await res.json() as { signedURL: string }
+  return data.signedURL.startsWith('http') ? data.signedURL : `${url}/storage/v1${data.signedURL}`
 }
 
 export async function getDownloadUrl(objectKey: string): Promise<string> {
-  const bucket = process.env.R2_BUCKET
-  if (!bucket) throw new Error('R2_BUCKET not set.')
-  const client = getClient()
-  return getSignedUrl(
-    client,
-    new GetObjectCommand({ Bucket: bucket, Key: objectKey }),
-    { expiresIn: 300 },
-  )
+  const { url, key, bucket } = getConfig()
+  const res = await fetch(`${url}/storage/v1/object/sign/${bucket}/${objectKey}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresIn: 300 }),
+  })
+  if (!res.ok) throw new Error(`Supabase Storage sign error: ${await res.text()}`)
+  const data = await res.json() as { signedURL: string }
+  return data.signedURL.startsWith('http') ? data.signedURL : `${url}/storage/v1${data.signedURL}`
 }
 
 export async function deleteDocument(objectKey: string): Promise<void> {
-  const bucket = process.env.R2_BUCKET
-  if (!bucket) throw new Error('R2_BUCKET not set.')
-  const client = getClient()
-  await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: objectKey }))
+  const { url, key, bucket } = getConfig()
+  const res = await fetch(`${url}/storage/v1/object/${bucket}/${objectKey}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${key}` },
+  })
+  if (!res.ok) throw new Error(`Supabase Storage delete error: ${await res.text()}`)
 }
